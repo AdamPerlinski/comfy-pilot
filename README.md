@@ -94,16 +94,18 @@ Best for: Local use, privacy, no API costs
 
 Best for: Highest quality responses, complex workflows
 
-1. **Install Claude CLI:**
+> **💡 No extra API costs!** Claude Code uses your existing Claude Max ($20/mo) or Pro ($100/mo) subscription. No separate API billing.
+
+1. **Install Claude Code:**
    ```bash
    npm install -g @anthropic-ai/claude-code
    ```
 
-2. **Set API key:**
+2. **Login with your Claude account:**
    ```bash
-   export ANTHROPIC_API_KEY=sk-ant-xxxxx
+   claude
    ```
-   Get key at: https://console.anthropic.com/
+   Follow the prompts to authenticate with your Claude Max or Pro account.
 
 3. **Verify:**
    ```bash
@@ -321,7 +323,7 @@ Agent: Checking your installed nodes...
 | Agent | Type | Best For | Setup |
 |-------|------|----------|-------|
 | **Ollama** | Local | Free, private, offline | `ollama serve` |
-| **Claude Code** ✅ | CLI | Best quality | `ANTHROPIC_API_KEY` |
+| **Claude Code** ✅ | CLI | Best quality | Claude Max/Pro subscription |
 | **Gemini CLI** | CLI | Google ecosystem | `gemini auth` |
 | **Gemini API** | HTTP | No CLI needed | `GOOGLE_API_KEY` |
 | **OpenAI Codex** | CLI | OpenAI ecosystem | `codex` CLI |
