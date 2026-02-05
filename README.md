@@ -35,14 +35,6 @@ Talk to Claude, Ollama, Gemini, or other AI agents directly in ComfyUI. Describe
 
 ## 📦 Installation
 
-### Prerequisites
-
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) installed and working
-- Python 3.10+
-- At least one AI agent (Ollama recommended for local use)
-
-### Step 1: Clone into ComfyUI
-
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/AdamPerlinski/comfy-pilot.git
@@ -50,15 +42,11 @@ cd comfy-pilot
 pip install -r requirements.txt
 ```
 
-That's it! The only dependency is `aiohttp` (for HTTP communication with agents).
+Restart ComfyUI. Done! 🎉
 
-**Alternative - via ComfyUI Manager:**
-1. Open ComfyUI
-2. Click "Manager" → "Install Custom Nodes"
-3. Search "comfy-pilot"
-4. Click Install, restart ComfyUI
+Now setup an AI agent below.
 
-### Step 3: Setup an AI Agent
+### 🤖 Setup an AI Agent
 
 You need at least one agent. Choose based on your needs:
 
