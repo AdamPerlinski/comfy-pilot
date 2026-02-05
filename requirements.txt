@@ -1,0 +1,8 @@
+# comfy-pilot dependencies
+
+# HTTP client for agent communication
+aiohttp>=3.8.0
+
+# These are typically already installed with ComfyUI:
+# torch
+# numpy
