@@ -1,20 +1,21 @@
 # 🚀 comfy-pilot
 
-**AI copilot for ComfyUI** — Create and modify workflows through natural language conversation.
+**AI assistant for ComfyUI** — Create and modify workflows through natural language conversation.
 
 Talk to Claude, Ollama, Gemini, or other AI agents directly in ComfyUI. Describe what you want, get a working workflow.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-compatible-green.svg)
+![Status](https://img.shields.io/badge/status-alpha-orange.svg)
+
+> ⚠️ **ALPHA VERSION** — This project is in early development. Use at your own risk. The author is not responsible for any API costs, token usage, or other expenses incurred while using this software.
 
 ---
 
 ## 🎬 Demo
 
-<!-- TODO: Add demo GIFs/videos here -->
-
-https://github.com/user-attachments/assets/PLACEHOLDER
+![comfy-pilot demo](demo.gif)
 
 *Chat with AI to create workflows instantly*
 
@@ -511,9 +512,28 @@ from . import my_agent  # noqa: F401
 
 ---
 
+## ⚠️ Disclaimer
+
+**USE AT YOUR OWN RISK.** This software is provided "as is", without warranty of any kind.
+
+- **API Costs**: The author is NOT responsible for any API costs, token usage, or billing charges incurred while using this software with AI services (Claude, OpenAI, Gemini, etc.)
+- **No Liability**: The author assumes no liability for any damages, data loss, or other issues arising from the use of this software
+- **Alpha Software**: This is experimental software in early development — bugs and breaking changes are expected
+- **Third-Party Services**: This software interacts with third-party AI APIs — you are responsible for complying with their terms of service
+
+By using this software, you acknowledge that you understand and accept these terms.
+
+---
+
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE)
+**GPL-3.0 License** — see [LICENSE](LICENSE)
+
+This project is licensed under the GNU General Public License v3.0 to maintain compatibility with ComfyUI. This means:
+- ✅ Free to use, modify, and distribute
+- ✅ Commercial use allowed
+- ⚠️ Derivative works must also be open source under GPL-3.0
+- ⚠️ Changes must be documented
 
 ---
 
