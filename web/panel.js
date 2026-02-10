@@ -495,6 +495,37 @@ class ComfyPilotPanel {
       .cp-validation-result.invalid { background: rgba(220,53,69,0.15); color: #dc3545; }
       .cp-validation-result ul { margin: 4px 0 0 16px; padding: 0; }
 
+      /* Collapsible messages */
+      .cp-message.collapsed .cp-msg-content {
+        max-height: 120px;
+        overflow: hidden;
+        mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+      }
+      .cp-msg-toggle {
+        display: block;
+        background: none;
+        border: none;
+        color: var(--cp-accent);
+        cursor: pointer;
+        font-size: 11px;
+        padding: 2px 0;
+        margin-top: 2px;
+      }
+      .cp-msg-toggle:hover { text-decoration: underline; }
+      .cp-validation-result.collapsed .cp-val-details { display: none; }
+      .cp-val-toggle {
+        background: none;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        font-size: 11px;
+        opacity: 0.8;
+        padding: 0;
+        margin-left: 6px;
+      }
+      .cp-val-toggle:hover { opacity: 1; }
+
       /* Workflow context */
       .cp-workflow-context {
         display: flex;
@@ -1083,7 +1114,24 @@ class ComfyPilotPanel {
 
     const messageEl = document.createElement("div");
     messageEl.className = `cp-message ${role}`;
-    messageEl.innerHTML = this.formatContent(content);
+
+    const contentEl = document.createElement("div");
+    contentEl.className = "cp-msg-content";
+    contentEl.innerHTML = this.formatContent(content);
+    messageEl.appendChild(contentEl);
+
+    // Collapse long messages (> 500 chars)
+    if (content.length > 500) {
+      messageEl.classList.add("collapsed");
+      const toggle = document.createElement("button");
+      toggle.className = "cp-msg-toggle";
+      toggle.textContent = "\u25bc Show more";
+      toggle.addEventListener("click", () => {
+        const isCollapsed = messageEl.classList.toggle("collapsed");
+        toggle.textContent = isCollapsed ? "\u25bc Show more" : "\u25b2 Show less";
+      });
+      messageEl.appendChild(toggle);
+    }
 
     this.messagesContainer.appendChild(messageEl);
     this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
@@ -1092,8 +1140,34 @@ class ComfyPilotPanel {
   }
 
   updateMessage(messageEl, content) {
-    messageEl.innerHTML = this.formatContent(content);
+    let contentEl = messageEl.querySelector(".cp-msg-content");
+    if (contentEl) {
+      contentEl.innerHTML = this.formatContent(content);
+    } else {
+      messageEl.innerHTML = this.formatContent(content);
+    }
     this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+
+    // Add/update collapse toggle for long messages
+    if (content.length > 500 && !messageEl.querySelector(".cp-msg-toggle")) {
+      if (!contentEl) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cp-msg-content";
+        wrapper.innerHTML = messageEl.innerHTML;
+        messageEl.innerHTML = "";
+        messageEl.appendChild(wrapper);
+        contentEl = wrapper;
+      }
+      messageEl.classList.add("collapsed");
+      const toggle = document.createElement("button");
+      toggle.className = "cp-msg-toggle";
+      toggle.textContent = "\u25bc Show more";
+      toggle.addEventListener("click", () => {
+        const isCollapsed = messageEl.classList.toggle("collapsed");
+        toggle.textContent = isCollapsed ? "\u25bc Show more" : "\u25b2 Show less";
+      });
+      messageEl.appendChild(toggle);
+    }
 
     const lastMsg = this.messages[this.messages.length - 1];
     if (lastMsg) lastMsg.content = content;
@@ -1169,7 +1243,8 @@ class ComfyPilotPanel {
         resultDiv.innerHTML = `<strong>\u2713 Valid</strong> (${result.node_count} nodes${result.validated_against_registry ? ", checked against registry" : ""})`;
       } else {
         let html = `<strong>\u2717 Invalid</strong> (${result.errors.length} error${result.errors.length !== 1 ? "s" : ""})`;
-        html += "<ul>";
+        html += `<button class="cp-val-toggle">\u25bc details</button>`;
+        html += `<div class="cp-val-details"><ul>`;
         for (const err of result.errors) {
           html += `<li>${err.message}${err.suggestion ? ` <em>${err.suggestion}</em>` : ""}</li>`;
         }
@@ -1182,8 +1257,16 @@ class ComfyPilotPanel {
           }
           html += "</ul>";
         }
+        html += "</div>";
 
         resultDiv.innerHTML = html;
+
+        // Toggle validation details
+        const valToggle = resultDiv.querySelector(".cp-val-toggle");
+        valToggle.addEventListener("click", () => {
+          resultDiv.classList.toggle("collapsed");
+          valToggle.textContent = resultDiv.classList.contains("collapsed") ? "\u25bc details" : "\u25b2 hide";
+        });
 
         // Add "Ask agent to fix" button
         const fixBtn = document.createElement("button");
