@@ -68,10 +68,11 @@ Best for: Local use, privacy, no API costs
 
 2. **Download a model:**
    ```bash
-   ollama pull llama3.2        # Good general model (3GB)
-   ollama pull deepseek-r1:8b  # Good for coding (5GB)
-   ollama pull qwen2.5:7b      # Alternative (4GB)
+   ollama pull qwen2.5-coder:7b   # Recommended - best for workflow generation (4.7GB)
+   ollama pull qwen2.5-coder:32b  # Best quality if you have 24GB+ VRAM (19GB)
+   ollama pull llama3.2:3b         # Lightweight alternative (2GB)
    ```
+   > **Recommended:** `qwen2.5-coder:7b` — best balance of quality and speed for generating ComfyUI workflows.
 
 3. **Start Ollama:**
    ```bash
@@ -310,19 +311,19 @@ Agent: Checking your installed nodes...
 
 ## 🤖 Supported Agents
 
-> **Note:** Currently only tested with **Claude Code**. Other agents are implemented but may require additional testing and fixes. Contributions welcome!
+> **Note:** Tested with Claude Code, Ollama, and Aider. Other agents are implemented but may need additional testing. Contributions welcome!
 
-| Agent | Type | Best For | Setup |
-|-------|------|----------|-------|
-| **Ollama** | Local | Free, private, offline | `ollama serve` |
-| **Claude Code** ✅ | CLI | Best quality | Claude Max/Pro subscription |
-| **Gemini CLI** | CLI | Google ecosystem | `gemini auth` |
-| **Gemini API** | HTTP | No CLI needed | `GOOGLE_API_KEY` |
-| **OpenAI Codex** | CLI | OpenAI ecosystem | `codex` CLI |
-| **OpenAI API** | HTTP | No CLI needed | `OPENAI_API_KEY` |
-| **Kilo Code** | CLI | Open source | `kilo` CLI |
-| **Aider** | CLI | Coding focus | `pip install aider-chat` |
-| **Open Interpreter** | CLI | Code execution | `pip install open-interpreter` |
+| Agent | Status | Type | Best For | Setup |
+|-------|--------|------|----------|-------|
+| **Ollama** | ✅ tested | Local | Free, private, offline | `ollama serve` |
+| **Claude Code** | ✅ tested | CLI | Best quality | Claude Max/Pro subscription |
+| **Aider** | ✅ tested | CLI | Coding focus | `pip install aider-chat` |
+| **Gemini CLI** | untested | CLI | Google ecosystem | `gemini auth` |
+| **Gemini API** | untested | HTTP | No CLI needed | `GOOGLE_API_KEY` |
+| **OpenAI Codex** | untested | CLI | OpenAI ecosystem | `codex` CLI |
+| **OpenAI API** | untested | HTTP | No CLI needed | `OPENAI_API_KEY` |
+| **Kilo Code** | untested | CLI | Open source | `kilo` CLI |
+| **Open Interpreter** | untested | CLI | Code execution | `pip install open-interpreter` |
 
 ---
 
