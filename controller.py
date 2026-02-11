@@ -1,18 +1,26 @@
 """Main controller for comfy-pilot.
 
-Handles HTTP endpoints and coordinates agent communication.
+Handles HTTP endpoints and coordinates agent communication,
+knowledge selection, workflow validation, and auto-correction.
 """
 
 import asyncio
 import json
-from typing import Dict, Any, List, Optional
+import logging
+from typing import Dict, Any, List, Optional, Set
 
 from aiohttp import web
 
 from .agents import AgentRegistry, AgentMessage, AgentConfig
 from .agents.ollama import OllamaBackend  # noqa: F401 - registers itself
+from .knowledge import KnowledgeManager
 from .system import SystemMonitor
+from .validation import NodeRegistry, WorkflowValidator
 from .workflow import WorkflowManipulator
+
+logger = logging.getLogger("comfy-pilot")
+
+MAX_CORRECTION_RETRIES = 3
 
 
 class ComfyPilotController:
@@ -20,6 +28,10 @@ class ComfyPilotController:
 
     def __init__(self):
         self.conversations: Dict[str, List[AgentMessage]] = {}
+        self.knowledge_manager = KnowledgeManager()
+        self.knowledge_manager.load_all()
+        self.node_registry = NodeRegistry()
+        self.validator = WorkflowValidator(self.node_registry)
 
     def setup_routes(self, routes: web.RouteTableDef) -> None:
         """Register HTTP routes with aiohttp."""
@@ -48,16 +60,61 @@ class ComfyPilotController:
             custom_nodes = await SystemMonitor.get_installed_custom_nodes()
             return web.json_response(custom_nodes)
 
+        @routes.get("/comfy-pilot/knowledge-categories")
+        async def get_knowledge_categories(request: web.Request) -> web.Response:
+            """Get available knowledge categories for UI checkboxes."""
+            categories = self.knowledge_manager.get_all_categories()
+            return web.json_response(categories)
+
+        @routes.get("/comfy-pilot/node-info")
+        async def get_node_info(request: web.Request) -> web.Response:
+            """Get available node types from the registry."""
+            await self.node_registry.fetch()
+            class_types = self.node_registry.get_all_class_types()
+            return web.json_response({
+                "loaded": self.node_registry.is_loaded,
+                "node_count": len(class_types),
+                "class_types": class_types[:200],  # Limit response size
+            })
+
+        @routes.post("/comfy-pilot/validate-workflow")
+        async def validate_workflow(request: web.Request) -> web.Response:
+            """Validate a workflow without applying it."""
+            data = await request.json()
+            workflow = data.get("workflow", {})
+
+            # Try to fetch registry if not loaded
+            await self.node_registry.fetch()
+
+            result = self.validator.validate(workflow)
+            return web.json_response({
+                "valid": result.valid,
+                "node_count": result.node_count,
+                "validated_against_registry": result.validated_against_registry,
+                "errors": [
+                    {"check": i.check, "node_id": i.node_id,
+                     "message": i.message, "suggestion": i.suggestion}
+                    for i in result.errors
+                ],
+                "warnings": [
+                    {"check": i.check, "node_id": i.node_id,
+                     "message": i.message, "suggestion": i.suggestion}
+                    for i in result.warnings
+                ],
+            })
+
         @routes.post("/comfy-pilot/chat")
         async def chat(request: web.Request) -> web.StreamResponse:
-            """Chat with an agent (streaming response)."""
+            """Chat with an agent (streaming response with auto-correction)."""
             data = await request.json()
 
             agent_name = data.get("agent", "ollama")
             message = data.get("message", "")
             history = data.get("history", [])
-            session_id = data.get("session_id", "default")
             current_workflow = data.get("current_workflow")
+            selected_model = data.get("model")
+            context_mode = data.get("context_mode", "standard")
+            knowledge_categories = data.get("knowledge_categories")
 
             # Get the agent backend
             agent = AgentRegistry.get(agent_name)
@@ -74,30 +131,51 @@ class ComfyPilotController:
                     status=503
                 )
 
+            # Build knowledge context
+            categories_enabled = set(knowledge_categories) if knowledge_categories else None
+            model_name = selected_model or ""
+            knowledge_text = self.knowledge_manager.build_knowledge_text(
+                message=message,
+                agent_name=agent_name,
+                model_name=model_name,
+                context_mode=context_mode,
+                categories_enabled=categories_enabled,
+            )
+
+            # Build system context
+            system_context = await self._build_system_context()
+
+            # Build workflow context
+            workflow_context = ""
+            if current_workflow:
+                verbose = context_mode != "minimal"
+                workflow_context = self._build_workflow_context(current_workflow, verbose=verbose)
+
+            # Compose full system prompt
+            base_prompt = agent.get_base_system_prompt()
+            full_prompt = base_prompt
+            if knowledge_text:
+                full_prompt += "\n\n" + knowledge_text
+            full_prompt += "\n\n" + system_context
+            if workflow_context:
+                full_prompt += "\n\n" + workflow_context
+
             # Build messages list
             messages = []
-
-            # Add history
             for msg in history:
                 messages.append(AgentMessage(
                     role=msg.get("role", "user"),
                     content=msg.get("content", "")
                 ))
-
-            # Add current message
             messages.append(AgentMessage(role="user", content=message))
 
-            # Get system context for the agent
-            system_context = await self._build_system_context()
-
-            # Include current workflow if provided
-            workflow_context = ""
-            if current_workflow:
-                workflow_context = self._build_workflow_context(current_workflow)
-
             config = AgentConfig(
-                system_prompt=agent.get_default_system_prompt() + "\n\n" + system_context + "\n\n" + workflow_context
+                model=selected_model,
+                system_prompt=full_prompt,
             )
+
+            # Try to ensure node registry is loaded for validation
+            await self.node_registry.fetch()
 
             # Create streaming response
             response = web.StreamResponse(
@@ -112,8 +190,22 @@ class ComfyPilotController:
             await response.prepare(request)
 
             try:
+                full_response = ""
                 async for chunk in agent.query(messages, config):
+                    full_response += chunk
                     await response.write(chunk.encode("utf-8"))
+
+                # Auto-correction loop
+                if self.node_registry.is_loaded:
+                    workflow_json = WorkflowManipulator.extract_workflow_from_response(full_response)
+                    if workflow_json:
+                        result = self.validator.validate(workflow_json)
+                        if not result.valid and result.errors:
+                            await self._run_correction_loop(
+                                agent, messages, config, full_response,
+                                result, response
+                            )
+
             except Exception as e:
                 await response.write(f"\n\nError: {str(e)}".encode("utf-8"))
 
@@ -126,7 +218,7 @@ class ComfyPilotController:
             data = await request.json()
             workflow = data.get("workflow", {})
 
-            # Validate the workflow
+            # Basic structural validation
             manipulator = WorkflowManipulator(workflow)
             is_valid, errors = manipulator.validate()
 
@@ -136,11 +228,74 @@ class ComfyPilotController:
                     "errors": errors
                 }, status=400)
 
+            # Registry-based validation if available
+            await self.node_registry.fetch()
+            if self.node_registry.is_loaded:
+                result = self.validator.validate(workflow)
+                if not result.valid:
+                    return web.json_response({
+                        "success": False,
+                        "errors": [i.message for i in result.errors],
+                        "warnings": [i.message for i in result.warnings],
+                    }, status=400)
+
             return web.json_response({
                 "success": True,
                 "workflow": workflow,
                 "node_count": len(workflow)
             })
+
+    async def _run_correction_loop(
+        self,
+        agent,
+        original_messages: List[AgentMessage],
+        config: AgentConfig,
+        last_response: str,
+        validation_result,
+        stream_response: web.StreamResponse,
+    ) -> None:
+        """Run the auto-correction loop when validation fails."""
+        for attempt in range(1, MAX_CORRECTION_RETRIES + 1):
+            # Stream correction notice
+            notice = f"\n\n---\n**Validation found {len(validation_result.errors)} error(s). Correcting (attempt {attempt}/{MAX_CORRECTION_RETRIES})...**\n\n"
+            await stream_response.write(notice.encode("utf-8"))
+
+            # Build correction message
+            error_text = validation_result.format_for_agent()
+            correction_messages = list(original_messages)
+            correction_messages.append(AgentMessage(role="assistant", content=last_response))
+            correction_messages.append(AgentMessage(role="user", content=error_text))
+
+            # Get corrected response
+            corrected_response = ""
+            async for chunk in agent.query(correction_messages, config):
+                corrected_response += chunk
+                await stream_response.write(chunk.encode("utf-8"))
+
+            # Validate the correction
+            workflow_json = WorkflowManipulator.extract_workflow_from_response(corrected_response)
+            if not workflow_json:
+                # No workflow in response - agent might have explained the fix
+                break
+
+            result = self.validator.validate(workflow_json)
+            if result.valid or not result.errors:
+                # Fixed!
+                await stream_response.write(
+                    "\n\n**Workflow validated successfully.**\n".encode("utf-8")
+                )
+                break
+
+            # Still errors - continue loop
+            last_response = corrected_response
+            validation_result = result
+
+        else:
+            # Max retries exceeded
+            remaining = validation_result.format_for_agent()
+            await stream_response.write(
+                f"\n\n**Auto-correction could not fix all errors after {MAX_CORRECTION_RETRIES} attempts.**\n{remaining}\n".encode("utf-8")
+            )
 
     async def _build_system_context(self) -> str:
         """Build system context string for agents."""
@@ -154,20 +309,19 @@ class ComfyPilotController:
                 f"**GPU**: {gpu['name']}, "
                 f"{gpu['vram_free_mb']}MB VRAM free of {gpu['vram_total_mb']}MB"
             )
-            # Add VRAM-based recommendations
             vram_free = gpu['vram_free_mb']
             if vram_free < 6000:
-                lines.append("  → Low VRAM: Recommend SD 1.5, fp8 models, tiled VAE")
+                lines.append("  -> Low VRAM: Recommend SD 1.5, fp8 models, tiled VAE")
             elif vram_free < 10000:
-                lines.append("  → Medium VRAM: SDXL OK, video with fewer frames")
+                lines.append("  -> Medium VRAM: SDXL OK, video with fewer frames")
             elif vram_free < 16000:
-                lines.append("  → Good VRAM: FLUX fp8 OK, most video workflows")
+                lines.append("  -> Good VRAM: FLUX fp8 OK, most video workflows")
             else:
-                lines.append("  → High VRAM: All models supported")
+                lines.append("  -> High VRAM: All models supported")
         else:
             lines.append("**GPU**: Information unavailable")
 
-        # Available models (try to get them)
+        # Available models
         try:
             models = await SystemMonitor.get_available_models()
             if models.get("checkpoints"):
@@ -197,7 +351,6 @@ class ComfyPilotController:
                 if capabilities.get("controlnet"):
                     lines.append(f"  - ControlNet: {', '.join(capabilities['controlnet'])}")
 
-                # Note what's missing for common tasks
                 missing = []
                 if not capabilities.get("video"):
                     missing.append("video generation (AnimateDiff/WAN)")
@@ -208,26 +361,41 @@ class ComfyPilotController:
 
                 if missing:
                     lines.append(f"\n  **Missing for full capability**: {', '.join(missing)}")
-                    lines.append("  → Suggest installation if user needs these features")
+                    lines.append("  -> Suggest installation if user needs these features")
         except Exception:
             pass
 
         return "\n".join(lines)
 
-    def _build_workflow_context(self, workflow: Dict[str, Any]) -> str:
-        """Build context string from the current workflow."""
-        lines = ["## CURRENT WORKFLOW (User's active workflow in ComfyUI)"]
-        lines.append("The user has shared their current workflow. Analyze it to provide accurate modifications.")
-        lines.append("")
+    def _build_workflow_context(self, workflow: Dict[str, Any], verbose: bool = True) -> str:
+        """Build context string from the current workflow.
 
-        # Extract key information from the workflow
+        Args:
+            workflow: The current workflow dict
+            verbose: If False, return only a summary (for small models)
+        """
         nodes = workflow.get("nodes", [])
         links = workflow.get("links", [])
 
         if not nodes:
-            lines.append("(Empty workflow)")
-            return "\n".join(lines)
+            return "## CURRENT WORKFLOW\n(Empty workflow)"
 
+        # Summary mode for small models
+        if not verbose:
+            node_types = {}
+            for node in nodes:
+                t = node.get("type", "Unknown")
+                node_types[t] = node_types.get(t, 0) + 1
+            type_list = ", ".join(
+                f"{t}({c})" if c > 1 else t
+                for t, c in sorted(node_types.items())
+            )
+            return f"## CURRENT WORKFLOW ({len(nodes)} nodes): {type_list}"
+
+        # Detailed mode
+        lines = ["## CURRENT WORKFLOW (User's active workflow in ComfyUI)"]
+        lines.append("The user has shared their current workflow. Analyze it to provide accurate modifications.")
+        lines.append("")
         lines.append(f"**Node count**: {len(nodes)}")
         lines.append(f"**Connection count**: {len(links) if links else 0}")
         lines.append("")
@@ -247,18 +415,15 @@ class ComfyPilotController:
         lines.append("")
         lines.append("**Node details**:")
 
-        # Extract key parameters from important nodes
         for node in nodes:
             node_type = node.get("type", "Unknown")
             node_id = node.get("id", "?")
             title = node.get("title", node_type)
 
-            # Focus on nodes with widgets (parameters)
             widgets = node.get("widgets_values", [])
             if widgets:
                 lines.append(f"\n[{node_id}] {title} ({node_type}):")
 
-                # Try to identify common parameter patterns
                 if "KSampler" in node_type:
                     self._extract_ksampler_params(lines, widgets, node)
                 elif "EmptyLatentImage" in node_type:
@@ -276,33 +441,28 @@ class ComfyPilotController:
                 elif "Video" in node_type or "AnimateDiff" in node_type:
                     self._extract_video_params(lines, widgets, node_type)
                 else:
-                    # Generic widget display
                     if len(widgets) <= 5:
                         lines.append(f"  widgets: {widgets}")
 
         lines.append("")
         lines.append("When suggesting modifications, reference specific node IDs and parameter names.")
-        lines.append("Provide the exact values to change (from → to).")
+        lines.append("Provide the exact values to change (from -> to).")
 
         return "\n".join(lines)
 
     def _extract_ksampler_params(self, lines: List[str], widgets: List, node: Dict) -> None:
-        """Extract KSampler parameters."""
-        # KSampler typically has: seed, steps, cfg, sampler_name, scheduler, denoise
         param_names = ["seed", "steps", "cfg", "sampler_name", "scheduler", "denoise"]
         for i, name in enumerate(param_names):
             if i < len(widgets):
                 lines.append(f"  {name}: {widgets[i]}")
 
     def _extract_latent_params(self, lines: List[str], widgets: List) -> None:
-        """Extract EmptyLatentImage parameters."""
         param_names = ["width", "height", "batch_size"]
         for i, name in enumerate(param_names):
             if i < len(widgets):
                 lines.append(f"  {name}: {widgets[i]}")
 
     def _extract_clip_params(self, lines: List[str], widgets: List) -> None:
-        """Extract CLIP/prompt parameters."""
         if widgets:
             text = str(widgets[0])
             if len(text) > 200:
@@ -310,35 +470,29 @@ class ComfyPilotController:
             lines.append(f"  prompt: \"{text}\"")
 
     def _extract_vae_params(self, lines: List[str], widgets: List, node_type: str) -> None:
-        """Extract VAE parameters."""
         if "Tiled" in node_type and widgets:
             lines.append(f"  tile_size: {widgets[0] if widgets else 'default'}")
 
     def _extract_checkpoint_params(self, lines: List[str], widgets: List) -> None:
-        """Extract checkpoint loader parameters."""
         if widgets:
             lines.append(f"  checkpoint: {widgets[0]}")
 
     def _extract_lora_params(self, lines: List[str], widgets: List) -> None:
-        """Extract LoRA parameters."""
         param_names = ["lora_name", "strength_model", "strength_clip"]
         for i, name in enumerate(param_names):
             if i < len(widgets):
                 lines.append(f"  {name}: {widgets[i]}")
 
     def _extract_controlnet_params(self, lines: List[str], widgets: List) -> None:
-        """Extract ControlNet parameters."""
         param_names = ["strength", "start_percent", "end_percent"]
         for i, name in enumerate(param_names):
             if i < len(widgets):
                 lines.append(f"  {name}: {widgets[i]}")
 
     def _extract_video_params(self, lines: List[str], widgets: List, node_type: str) -> None:
-        """Extract video generation parameters."""
         if "AnimateDiff" in node_type:
             lines.append(f"  (AnimateDiff node with {len(widgets)} parameters)")
         elif "Video" in node_type:
-            # Try to show frame-related params
             for i, val in enumerate(widgets[:5]):
                 lines.append(f"  param_{i}: {val}")
 

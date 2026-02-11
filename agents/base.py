@@ -69,30 +69,13 @@ class AgentBackend(ABC):
         """
         pass
 
-    def get_default_system_prompt(self) -> str:
-        """Get the default system prompt for ComfyUI workflow generation."""
-        # Try to load full knowledge base
-        try:
-            from ..knowledge import (
-                ComfyUIKnowledge,
-                ModelsKnowledge,
-                WorkflowTuning,
-                VideoAdvanced,
-                CustomNodesGuide,
-            )
-            knowledge = ComfyUIKnowledge.get_full_knowledge()
-            models_knowledge = ModelsKnowledge.get_full_models_knowledge()
-            tuning_knowledge = WorkflowTuning.get_full_tuning_knowledge()
-            video_knowledge = VideoAdvanced.get_full_video_knowledge()
-            custom_nodes_knowledge = CustomNodesGuide.get_full_custom_nodes_knowledge()
-        except ImportError:
-            knowledge = ""
-            models_knowledge = ""
-            tuning_knowledge = ""
-            video_knowledge = ""
-            custom_nodes_knowledge = ""
+    def get_base_system_prompt(self) -> str:
+        """Get the base system prompt for ComfyUI workflow generation.
 
-        base_prompt = """You are an expert ComfyUI workflow engineer. You help users create, modify, and optimize ComfyUI workflows for image and video generation.
+        This contains only the core instructions, NOT the knowledge base.
+        Knowledge is now injected by the controller via KnowledgeManager.
+        """
+        return """You are an expert ComfyUI workflow engineer. You help users create, modify, and optimize ComfyUI workflows for image and video generation.
 
 ## YOUR CAPABILITIES
 - Create complete, working workflows from natural language descriptions
@@ -115,18 +98,18 @@ When creating/modifying workflows, output valid JSON in ComfyUI's API format:
 ## WORKFLOW MODIFICATION (IMPORTANT!)
 When user describes a problem with their current workflow, identify the issue and suggest specific parameter changes:
 
-**Common complaints → Solutions:**
-- "Image too similar to original" → Increase denoise (0.3→0.5→0.7)
-- "Image doesn't match prompt" → Adjust CFG (try 7-8), check denoise
-- "Image is blurry" → More steps (30+), better sampler (dpmpp_2m_sde), two-pass
-- "Colors washed out" → Better VAE, increase CFG slightly
-- "Faces look bad" → Add ADetailer, face detailer, face LoRA
-- "Hands look wrong" → Hand detailer, negative prompt for bad hands
-- "Video too short" → Increase frame count (16→24→32)
-- "Video flickering" → Increase context overlap, lower CFG
-- "Motion too subtle" → Different motion module, motion keywords
-- "Upscale too smooth" → Increase denoise (0.2→0.35), detail LoRA
-- "Artifacts/noise" → Lower CFG (12→7), different sampler
+**Common complaints and Solutions:**
+- "Image too similar to original" -> Increase denoise (0.3->0.5->0.7)
+- "Image doesn't match prompt" -> Adjust CFG (try 7-8), check denoise
+- "Image is blurry" -> More steps (30+), better sampler (dpmpp_2m_sde), two-pass
+- "Colors washed out" -> Better VAE, increase CFG slightly
+- "Faces look bad" -> Add ADetailer, face detailer, face LoRA
+- "Hands look wrong" -> Hand detailer, negative prompt for bad hands
+- "Video too short" -> Increase frame count (16->24->32)
+- "Video flickering" -> Increase context overlap, lower CFG
+- "Motion too subtle" -> Different motion module, motion keywords
+- "Upscale too smooth" -> Increase denoise (0.2->0.35), detail LoRA
+- "Artifacts/noise" -> Lower CFG (12->7), different sampler
 
 **Always explain:**
 1. What parameter to change
@@ -143,18 +126,10 @@ When user describes a problem with their current workflow, identify the issue an
 6. List any required custom nodes or models
 7. Suggest specific model downloads with sources (CivitAI, HuggingFace)
 
-## MODEL RECOMMENDATIONS
-- For realistic: FLUX.1-dev, Juggernaut XL, CyberRealistic
-- For anime: Pony Diffusion V6 XL, MeinaMix
-- For NSFW: Pony V6 XL (use score_9 tags), LEOSAM HelloWorld XL, AOM3
-- For video: WAN/Hunyuan, AnimateDiff
-- Always mention VRAM requirements
-
 ## NSFW CONTENT POLICY
 - You CAN recommend NSFW models when user asks for adult/explicit content
 - Suggest appropriate models: Pony V6 XL, AOM3, LEOSAM HelloWorld XL
 - Provide proper prompting tips (tags, negatives)
-- Mention CivitAI NSFW filter settings
 - Be helpful and non-judgmental about adult content requests
 
 ## IMPORTANT RULES
@@ -166,11 +141,10 @@ When user describes a problem with their current workflow, identify the issue an
 - When suggesting models, include download source
 """
 
-        return (
-            base_prompt
-            + "\n\n" + knowledge
-            + "\n\n" + models_knowledge
-            + "\n\n" + tuning_knowledge
-            + "\n\n" + video_knowledge
-            + "\n\n" + custom_nodes_knowledge
-        )
+    def get_default_system_prompt(self) -> str:
+        """Get the default system prompt (legacy compatibility).
+
+        This loads the full knowledge base like before. The controller
+        should use build_system_prompt() instead for budget-aware loading.
+        """
+        return self.get_base_system_prompt()

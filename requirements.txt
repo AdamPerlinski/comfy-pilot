@@ -3,6 +3,9 @@
 # HTTP client for agent communication
 aiohttp>=3.8.0
 
+# YAML frontmatter parsing for knowledge files
+pyyaml>=6.0
+
 # These are typically already installed with ComfyUI:
 # torch
 # numpy
