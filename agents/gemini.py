@@ -10,10 +10,11 @@ Docs:    https://googleapis.github.io/python-genai/
 import asyncio
 import os
 import shutil
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional, Union
 
 from .base import AgentBackend, AgentMessage, AgentConfig
 from .registry import AgentRegistry
+from .tools import ToolCall, ToolDefinition
 
 
 # ---------------------------------------------------------------------------
@@ -248,25 +249,101 @@ class GeminiAPIBackend(AgentBackend):
 
         return True
 
+    @property
+    def supports_tool_calling(self) -> bool:
+        return True
+
+    def _get_api_key(self) -> Optional[str]:
+        return (
+            self._api_key
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+        )
+
+    @staticmethod
+    def _tools_to_gemini(tools: List[ToolDefinition]):
+        """Convert ToolDefinitions to Gemini functionDeclarations format."""
+        from google.genai import types
+
+        declarations = []
+        for tool in tools:
+            properties = {}
+            required = []
+            for param in tool.parameters:
+                type_map = {
+                    "string": "STRING", "integer": "INTEGER",
+                    "number": "NUMBER", "boolean": "BOOLEAN",
+                    "array": "ARRAY",
+                }
+                schema = types.Schema(
+                    type=type_map.get(param.type, "STRING"),
+                    description=param.description,
+                )
+                if param.enum:
+                    schema.enum = param.enum
+                properties[param.name] = schema
+                if param.required:
+                    required.append(param.name)
+
+            declarations.append(types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description,
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties=properties,
+                    required=required if required else None,
+                ),
+            ))
+        return [types.Tool(function_declarations=declarations)]
+
+    def _build_contents(self, messages: List[AgentMessage]):
+        """Convert AgentMessages to Gemini Content objects."""
+        from google.genai import types
+
+        contents = []
+        for msg in messages:
+            if msg.role == "tool":
+                # Tool result → function response
+                tool_name = (msg.metadata or {}).get("tool_name", "unknown")
+                contents.append(types.Content(
+                    role="model",
+                    parts=[types.Part.from_function_response(
+                        name=tool_name,
+                        response={"result": msg.content},
+                    )],
+                ))
+            elif msg.role == "assistant" and msg.tool_calls:
+                # Assistant message that contains tool calls
+                parts = []
+                if msg.content:
+                    parts.append(types.Part.from_text(text=msg.content))
+                for tc in msg.tool_calls:
+                    parts.append(types.Part.from_function_call(
+                        name=tc.name,
+                        args=tc.arguments,
+                    ))
+                contents.append(types.Content(role="model", parts=parts))
+            else:
+                role = "user" if msg.role == "user" else "model"
+                contents.append(types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=msg.content)],
+                ))
+        return contents
+
     async def query(
         self,
         messages: List[AgentMessage],
         config: Optional[AgentConfig] = None,
     ) -> AsyncIterator[str]:
-        """Stream a response from the Gemini API using google-genai SDK."""
+        """Stream a text-only response from Gemini (no tools)."""
         from google import genai
         from google.genai import types
 
         config = config or AgentConfig()
         model = config.model or "gemini-2.5-flash"
         system_prompt = config.system_prompt or self.get_default_system_prompt()
-
-        # Re-read API key in case env changed since is_available()
-        api_key = (
-            self._api_key
-            or os.environ.get("GOOGLE_API_KEY")
-            or os.environ.get("GEMINI_API_KEY")
-        )
+        api_key = self._get_api_key()
         if not api_key:
             yield "Error: No GOOGLE_API_KEY or GEMINI_API_KEY found in environment."
             return
@@ -276,25 +353,19 @@ class GeminiAPIBackend(AgentBackend):
             yield "Error: No messages to send."
             return
 
-        # Split into history (all but last) and the current user message
         last_message = all_messages[-1]
         prior_messages = all_messages[:-1]
 
-        # Build conversation history in the format the SDK expects
         history = []
         for msg in prior_messages:
             role = "user" if msg.role == "user" else "model"
-            history.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part.from_text(text=msg.content)],
-                )
-            )
+            history.append(types.Content(
+                role=role,
+                parts=[types.Part.from_text(text=msg.content)],
+            ))
 
         try:
             client = genai.Client(api_key=api_key)
-
-            # Create async chat session with history and system prompt
             chat = client.aio.chats.create(
                 model=model,
                 config=types.GenerateContentConfig(
@@ -304,8 +375,6 @@ class GeminiAPIBackend(AgentBackend):
                 ),
                 history=history,
             )
-
-            # Stream the latest user message
             async for chunk in await chat.send_message_stream(last_message.content):
                 text = chunk.text
                 if text:
@@ -321,6 +390,65 @@ class GeminiAPIBackend(AgentBackend):
                 )
             else:
                 yield f"Error: {error_str}"
+
+    async def query_with_tools(
+        self,
+        messages: List[AgentMessage],
+        config: Optional[AgentConfig] = None,
+        tools: Optional[List[ToolDefinition]] = None,
+    ) -> AsyncIterator[Union[str, ToolCall]]:
+        """Query Gemini with native function calling support."""
+        from google import genai
+        from google.genai import types
+        import uuid
+
+        if not tools:
+            async for chunk in self.query(messages, config):
+                yield chunk
+            return
+
+        config = config or AgentConfig()
+        model = config.model or "gemini-2.5-flash"
+        system_prompt = config.system_prompt or self.get_default_system_prompt()
+        api_key = self._get_api_key()
+        if not api_key:
+            yield "Error: No GOOGLE_API_KEY or GEMINI_API_KEY found in environment."
+            return
+
+        gemini_tools = self._tools_to_gemini(tools)
+        contents = self._build_contents(messages)
+
+        try:
+            client = genai.Client(api_key=api_key)
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=config.temperature,
+                    max_output_tokens=config.max_tokens,
+                    tools=gemini_tools,
+                ),
+            )
+
+            if not response.candidates:
+                yield "Error: No response from Gemini."
+                return
+
+            # Process response parts — could be text, function calls, or both
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    yield ToolCall(
+                        id=str(uuid.uuid4()),
+                        name=fc.name,
+                        arguments=dict(fc.args) if fc.args else {},
+                    )
+                elif hasattr(part, "text") and part.text:
+                    yield part.text
+
+        except Exception as e:
+            yield f"Error: {e}"
 
 
 # Auto-register backends

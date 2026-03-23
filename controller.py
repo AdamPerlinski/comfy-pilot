@@ -13,6 +13,8 @@ from aiohttp import web
 
 from .agents import AgentRegistry, AgentMessage, AgentConfig
 from .agents.ollama import OllamaBackend  # noqa: F401 - registers itself
+from .agents.tools import ToolCall, ToolRegistry
+from .agents.comfyui_tools import setup_tools, set_current_workflow
 from .knowledge import KnowledgeManager
 from .system import SystemMonitor
 from .validation import NodeRegistry, WorkflowValidator
@@ -21,6 +23,7 @@ from .workflow import WorkflowManipulator
 logger = logging.getLogger("comfy-pilot")
 
 MAX_CORRECTION_RETRIES = 3
+MAX_TOOL_ROUNDS = 10
 
 
 class ComfyPilotController:
@@ -32,6 +35,7 @@ class ComfyPilotController:
         self.knowledge_manager.load_all()
         self.node_registry = NodeRegistry()
         self.validator = WorkflowValidator(self.node_registry)
+        self._tools = setup_tools(self.node_registry, SystemMonitor)
 
     def setup_routes(self, routes: web.RouteTableDef) -> None:
         """Register HTTP routes with aiohttp."""
@@ -189,11 +193,22 @@ class ComfyPilotController:
             )
             await response.prepare(request)
 
+            # Make current workflow available to tools
+            if current_workflow:
+                set_current_workflow(current_workflow)
+
             try:
                 full_response = ""
-                async for chunk in agent.query(messages, config):
-                    full_response += chunk
-                    await response.write(chunk.encode("utf-8"))
+
+                # Use tool loop if backend supports it and tools are available
+                if agent.supports_tool_calling and self._tools and config.tools_enabled:
+                    full_response = await self._run_tool_loop(
+                        agent, messages, config, self._tools, response
+                    )
+                else:
+                    async for chunk in agent.query(messages, config):
+                        full_response += chunk
+                        await response.write(chunk.encode("utf-8"))
 
                 # Auto-correction loop
                 if self.node_registry.is_loaded:
@@ -244,6 +259,67 @@ class ComfyPilotController:
                 "workflow": workflow,
                 "node_count": len(workflow)
             })
+
+    async def _run_tool_loop(
+        self,
+        agent,
+        messages: List[AgentMessage],
+        config: AgentConfig,
+        tools,
+        stream_response: web.StreamResponse,
+    ) -> str:
+        """Run the tool calling loop.
+
+        Sends messages to the agent with tools enabled. When the agent
+        returns ToolCall objects, executes them and feeds results back.
+        Loops until the agent returns only text or max rounds are hit.
+
+        Returns the final accumulated text response.
+        """
+        current_messages = list(messages)
+        full_text = ""
+
+        for _round in range(MAX_TOOL_ROUNDS):
+            text_parts = []
+            tool_calls = []
+
+            async for item in agent.query_with_tools(current_messages, config, tools):
+                if isinstance(item, ToolCall):
+                    tool_calls.append(item)
+                else:
+                    text_parts.append(item)
+                    await stream_response.write(item.encode("utf-8"))
+
+            round_text = "".join(text_parts)
+            full_text += round_text
+
+            if not tool_calls:
+                # No tool calls — agent is done
+                break
+
+            # Record the assistant message with its tool calls
+            current_messages.append(AgentMessage(
+                role="assistant",
+                content=round_text,
+                tool_calls=tool_calls,
+            ))
+
+            # Execute each tool call and feed results back
+            for tc in tool_calls:
+                result = await ToolRegistry.execute(tc)
+                logger.info(f"Tool {tc.name}({tc.arguments}) -> {len(result.content)} chars")
+                current_messages.append(AgentMessage(
+                    role="tool",
+                    content=result.content,
+                    tool_call_id=tc.id,
+                    metadata={"tool_name": tc.name},
+                ))
+        else:
+            await stream_response.write(
+                f"\n\n(Tool loop reached maximum of {MAX_TOOL_ROUNDS} rounds)".encode("utf-8")
+            )
+
+        return full_text
 
     async def _run_correction_loop(
         self,

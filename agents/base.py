@@ -2,15 +2,19 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Dict, Any, Optional, List
+from typing import AsyncIterator, Dict, Any, Optional, List, Union
+
+from .tools import ToolCall, ToolDefinition
 
 
 @dataclass
 class AgentMessage:
     """A message in a conversation with an agent."""
-    role: str  # "user", "assistant", "system"
+    role: str  # "user", "assistant", "system", "tool"
     content: str
     metadata: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[ToolCall]] = None  # For assistant messages with tool calls
+    tool_call_id: Optional[str] = None  # For tool result messages
 
 
 @dataclass
@@ -21,6 +25,7 @@ class AgentConfig:
     max_tokens: int = 4096
     system_prompt: Optional[str] = None
     additional_params: Optional[Dict[str, Any]] = field(default_factory=dict)
+    tools_enabled: bool = True
 
 
 class AgentBackend(ABC):
@@ -68,6 +73,26 @@ class AgentBackend(ABC):
             Text chunks as they arrive from the agent
         """
         pass
+
+    @property
+    def supports_tool_calling(self) -> bool:
+        """Whether this backend supports native tool/function calling."""
+        return False
+
+    async def query_with_tools(
+        self,
+        messages: List[AgentMessage],
+        config: Optional[AgentConfig] = None,
+        tools: Optional[List[ToolDefinition]] = None,
+    ) -> AsyncIterator[Union[str, ToolCall]]:
+        """Query with optional tool support.
+
+        Yields str chunks for text, or ToolCall objects when the LLM
+        wants to call a tool. Default implementation ignores tools
+        and delegates to query().
+        """
+        async for chunk in self.query(messages, config):
+            yield chunk
 
     def get_base_system_prompt(self) -> str:
         """Get the base system prompt for ComfyUI workflow generation.
