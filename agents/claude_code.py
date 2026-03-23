@@ -5,8 +5,6 @@ Claude Code can execute code, read files, and perform complex tasks.
 """
 
 import asyncio
-import json
-import os
 import shutil
 from typing import AsyncIterator, List, Optional
 
@@ -14,10 +12,12 @@ from .base import AgentBackend, AgentMessage, AgentConfig
 from .registry import AgentRegistry
 
 
+# Models available to Claude Pro subscribers (used as fallback)
 _FALLBACK_MODELS = [
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
     "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
 ]
 
 
@@ -50,12 +50,19 @@ class ClaudeCodeBackend(AgentBackend):
     def supported_models(self) -> List[str]:
         return self._dynamic_models or _FALLBACK_MODELS
 
-    async def _fetch_models(self, api_key: str) -> List[str]:
-        """Fetch available Claude models from the Anthropic API."""
+    async def _fetch_models_from_cli(self) -> List[str]:
+        """Fetch available models via `claude models` (uses Pro login, no API key needed)."""
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-            models = [m.id for m in client.models.list().data]
+            process = await asyncio.create_subprocess_exec(
+                "claude", "models",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+            if process.returncode != 0:
+                return _FALLBACK_MODELS
+            output = stdout.decode("utf-8", errors="replace").strip()
+            models = [line.strip() for line in output.splitlines() if line.strip()]
             if models:
                 print(f"[comfy-pilot] Claude Code: {len(models)} models available")
                 return models
@@ -73,7 +80,7 @@ class ClaudeCodeBackend(AgentBackend):
             process = await asyncio.create_subprocess_exec(
                 "claude", "--version",
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             await asyncio.wait_for(process.communicate(), timeout=10)
             if process.returncode != 0:
@@ -84,13 +91,11 @@ class ClaudeCodeBackend(AgentBackend):
         except Exception:
             return False
 
-        # Opportunistically fetch the full model list if an API key is available
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if api_key:
-            try:
-                self._dynamic_models = await self._fetch_models(api_key)
-            except Exception as e:
-                print(f"[comfy-pilot] Claude Code: model fetch skipped: {e}")
+        # Fetch model list via CLI (works with Pro login, no API key required)
+        try:
+            self._dynamic_models = await self._fetch_models_from_cli()
+        except Exception as e:
+            print(f"[comfy-pilot] Claude Code: model fetch skipped: {e}")
 
         return True
 
