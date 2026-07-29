@@ -9,6 +9,7 @@ from .registry import AgentRegistry
 
 # Import backends to trigger auto-registration
 from . import ollama  # noqa: F401
+from . import llamacpp  # noqa: F401
 from . import claude_code  # noqa: F401
 from . import gemini  # noqa: F401
 from . import codex  # noqa: F401
