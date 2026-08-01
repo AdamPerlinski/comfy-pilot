@@ -27,7 +27,7 @@ Talk to Claude, Ollama, Gemini, or other AI agents directly in ComfyUI. Describe
 ## ✨ Features
 
 - **💬 Chat Panel** — AI assistant directly in ComfyUI menu
-- **🤖 9 AI Agents** — Ollama, Claude, Gemini, OpenAI, Kilo, Aider, Open Interpreter
+- **🤖 10 AI Agents** — Ollama, llama.cpp, Claude, Gemini, OpenAI, Kilo, Aider, Open Interpreter
 - **🎨 Workflow Generation** — Describe what you want, get complete workflow
 - **🧠 Smart Recommendations** — Knows top models, VRAM requirements, best practices
 - **📊 System Aware** — Checks your GPU/VRAM, suggests optimizations
@@ -79,6 +79,22 @@ Best for: Local use, privacy, no API costs
    ollama serve
    ```
    Keep this running in background.
+
+</details>
+
+<details>
+<summary><b>🦙 llama.cpp (Free, Local, Private)</b></summary>
+
+Best for: Local use with maximum control — always-warm model, latest llama.cpp features
+
+1. **Build llama.cpp** ([instructions](https://github.com/ggml-org/llama.cpp)) and download a GGUF model from Hugging Face.
+
+2. **Start llama-server:**
+   ```bash
+   llama-server -m your-model.gguf -ngl 99 --host 0.0.0.0 --port 11434
+   ```
+
+comfy-pilot auto-detects it on `http://localhost:11434`. To use a different host or port, set the `LLAMACPP_BASE_URL` environment variable before starting ComfyUI.
 
 </details>
 
